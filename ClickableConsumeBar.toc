@@ -1,0 +1,15 @@
+## Interface: 16001
+## Title: ClickableConsumeBar
+## Notes: A clickable bar for the consumable buffs you want to keep up. Missing buffs are desaturated, expiring ones glow.
+## Version: 2.1.1
+## SavedVariablesPerCharacter: ClickableConsumeBarDB
+## AddonCompartmentFunc: ClickableConsumeBar_OnCompartmentClick
+## IconTexture: Interface\AddOns\ClickableConsumeBar\Media\Icon
+
+Data.lua
+Core.lua
+Glow.lua
+Track.lua
+Bar.lua
+MinimapButton.lua
+Options.lua
