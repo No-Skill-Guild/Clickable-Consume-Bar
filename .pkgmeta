@@ -1,0 +1,3 @@
+package-as: ClickableConsumeBar
+ignore:
+  - README.md

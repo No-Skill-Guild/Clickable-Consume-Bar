@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: ClickableConsumeBar
 ## Notes: A clickable bar for the consumable buffs you want to keep up. Missing buffs are desaturated, expiring ones glow.
-## Version: 2.1.1
+## Version: @project-version@
 ## SavedVariablesPerCharacter: ClickableConsumeBarDB
 ## AddonCompartmentFunc: ClickableConsumeBar_OnCompartmentClick
 ## IconTexture: Interface\AddOns\ClickableConsumeBar\Media\Icon

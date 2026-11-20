@@ -21,7 +21,11 @@ The command is now `/ccb`. The old `/cbb` still works.
 
 ## Install
 
-Unzip so the folder ends up at:
+### WoWUp (recommended)
+Paste the repo URL into WoWUp's **Get Addons** search to install and receive automatic updates.
+
+### Manual
+Download the zip from the latest [Release](../../releases) and unzip so the folder ends up at:
 
     World of Warcraft\_forever_\Interface\AddOns\ClickableConsumeBar\
 
@@ -114,3 +118,14 @@ The time left is always read from the buff itself, so longer buffs (for example 
 - An off-hand icon is dimmed, with no glow, while you have no weapon in that hand.
 - Settings and profiles are saved per character.
 - A profile switch during combat changes the bar when combat ends.
+
+## Releasing
+
+Releases are built automatically by [BigWigsMods/packager](https://github.com/BigWigsMods/packager) (`.github/workflows/release.yml`). Push a tag and a GitHub Release with the packaged zip is created, which WoWUp picks up. The packager reads `## Interface: 16xxx` in the `.toc` and marks the release for WoW Forever.
+
+```
+git tag v2.1.1
+git push origin v2.1.1
+```
+
+The tag becomes the addon version (`@project-version@` in the `.toc`).
