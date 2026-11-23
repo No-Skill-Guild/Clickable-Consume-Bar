@@ -112,7 +112,7 @@ local function OnEnter(self)
 	GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 	GameTooltip:SetText("ClickableConsumeBar")
 	GameTooltip:AddLine("Left-click: open the menu", 1, 1, 1)
-	GameTooltip:AddLine("Right-click: lock or unlock the bar", 1, 1, 1)
+	GameTooltip:AddLine("Right-click: lock or unlock the bars", 1, 1, 1)
 	GameTooltip:AddLine("Drag: move this button", 1, 1, 1)
 	GameTooltip:Show()
 end
@@ -141,7 +141,7 @@ local function Create()
 			bar.locked = not bar.locked
 			ns.UpdateMover()
 			ns.UpdateVisibility()
-			ns.Print(bar.locked and "Bar locked." or "Bar unlocked. Drag it by the handle above it.")
+			ns.Print(bar.locked and "Bars locked." or "Bars unlocked. Drag each one by the handle above it.")
 			if ns.RefreshOptions then ns.RefreshOptions() end
 		else
 			ns.ToggleOptions()

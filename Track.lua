@@ -432,7 +432,9 @@ end
 -- Seconds until this icon will look different without anything happening:
 -- its timer text ticking over, the warning time arriving, or the buff
 -- running out. nil when it won't change until the game reports something.
-local function NextChange(button, cache, now)
+-- `ticking` is false for a bar nobody can see: its text doesn't need to keep
+-- counting, only its status does.
+local function NextChange(button, cache, now, ticking)
 	local delay
 	local expires = cache.expires
 	if cache.active and expires and expires > now then
@@ -440,7 +442,7 @@ local function NextChange(button, cache, now)
 		delay = left
 		local threshold = cache.threshold
 		if threshold and left > threshold then delay = left - threshold end
-		if ns.db.bar.showTimer then
+		if ticking and button.cfg.showTimer then
 			-- "2h" changes on the half hour, "12m" on the minute, "45" each second.
 			local tick
 			if left >= 5400 then
@@ -479,11 +481,13 @@ end
 -- The one update routine: reads whatever is marked dirty, works out each
 -- icon's status, repaints what changed, and books the next wake-up.
 function ns.Update()
-	if not ns.bar then return end
+	if not ns.ready then return end
 	local now = GetTime()
 	local readAuras, readWeapons, readBags = dirtyAuras, dirtyWeapons, dirtyBags
 	dirtyAuras, dirtyWeapons, dirtyBags = false, false, false
-	local attention, wake, hasWeapon = false, nil, false
+	local wake, hasWeapon = nil, false
+	local bars = ns.bars
+	for i = 1, #bars do bars[i].needs = false end
 	passAuras = nil
 	-- Learning reads your buffs; when it has, the icons below reuse that read.
 	if readAuras and ns.learning then passAuras = ns.CheckLearning() or nil end
@@ -492,14 +496,16 @@ function ns.Update()
 	local buttons = ns.buttons
 	for i = 1, #buttons do
 		local button = buttons[i]
-		local entry, cache = button.entry, button.cache
+		local entry, cache, owner = button.entry, button.cache, button.owner
 		if entry.kind == "view" then
 			if readBags or not cache.status then ReadView(entry, cache) end
 		elseif button.slot then
-			hasWeapon = true
 			-- Weapon enchants are reported by events, the same ones Blizzard's
-			-- own buff frame relies on; a slow re-read backs them up.
-			if readWeapons or not cache.status or now >= weaponReadDue then
+			-- own buff frame relies on; a slow re-read backs them up. A hidden
+			-- bar skips the back-up unless its status is what brings it back.
+			local watched = owner.shown or owner.show.mode == "attention"
+			if watched then hasWeapon = true end
+			if readWeapons or not cache.status or (watched and now >= weaponReadDue) then
 				readWeapons = true
 				ReadWeapon(entry, button.slot, cache, now)
 			end
@@ -507,10 +513,13 @@ function ns.Update()
 			ReadSelf(entry, cache)
 		end
 		local status = Finish(entry, cache, now)
-		if status == "missing" or status == "expiring" then attention = true end
+		-- Each bar is told separately whether one of its own icons needs you.
+		if status == "missing" or status == "expiring" then owner.needs = true end
 		button.state = cache
-		ns.PaintButton(button, now)
-		local delay = NextChange(button, cache, now)
+		-- A hidden bar is left as it is and caught up when the game shows it.
+		local shown = owner.shown
+		if shown then ns.PaintButton(button, now) end
+		local delay = NextChange(button, cache, now, shown and not owner.invisible)
 		if delay and (not wake or delay < wake) then wake = delay end
 	end
 	if hasWeapon then
@@ -518,7 +527,7 @@ function ns.Update()
 		local delay = weaponReadDue - now
 		if not wake or delay < wake then wake = delay end
 	end
-	ns.SetAttention(attention)
+	ns.ApplyAttention()
 	if wake then ns.ScheduleWake(wake) end
 end
 
@@ -623,17 +632,26 @@ function ns.CheckLearning()
 
 	-- Nothing needs remembering when the item would be tracked by that buff
 	-- anyway: its own spell, or Well Fed for an item the game calls food.
+	-- The same item can sit on more than one bar; all of them learn together.
 	local plain = pick.id == useSpell or (ns.IsFood(entry.id) and IsWellFedName(pick.name))
-	local changed = false
-	if plain then
-		if current then
-			entry.learned = nil
-			changed = true
+	local changed, announced = false, false
+	for _, other in ipairs(ns.allEntries) do
+		if other.id == entry.id and other.kind == "self" and not (other.auraName and other.auraName ~= "") then
+			local had = other.learned
+			if plain then
+				if had then
+					other.learned = nil
+					changed = true
+				end
+			elseif not had or had.id ~= pick.id then
+				other.learned = { id = pick.id, name = pick.name }
+				changed = true
+				if not announced then
+					announced = true
+					ns.Print(("%s: tracking the buff \"%s\" from now on."):format(ns.ItemName(entry.id), pick.name or pick.id))
+				end
+			end
 		end
-	elseif not current or current.id ~= pick.id then
-		entry.learned = { id = pick.id, name = pick.name }
-		changed = true
-		ns.Print(("%s: tracking the buff \"%s\" from now on."):format(ns.ItemName(entry.id), pick.name or pick.id))
 	end
 	if changed then
 		ns.RequestScan("auras")
@@ -705,7 +723,7 @@ end
 -- of unknown kind is on the bar. Otherwise enchant events skip that work.
 function ns.UpdateLearnFlag()
 	local need = false
-	for _, entry in ipairs(ns.entries) do
+	for _, entry in ipairs(ns.allEntries) do
 		if entry.kind == "weapon" and not ns.EnchantKind(entry) then need = true end
 	end
 	ns.learnKinds = need
@@ -717,9 +735,17 @@ function ns.CheckWeaponLearn()
 	if not pending or not lastGain then return end
 	-- The enchant has to land with the cast: just before it or soon after.
 	if lastGain.time >= pending.time - 0.5 and lastGain.time <= pending.time + 3 then
-		local entry = pending.entry
-		if entry.slotType == "auto" and not ns.WEAPON_ITEMS[entry.id] and entry.learnedKind ~= lastGain.kind then
-			entry.learnedKind = lastGain.kind
+		local id, changed = pending.entry.id, false
+		if not ns.WEAPON_ITEMS[id] then
+			-- every copy of the item, whichever bar it's on
+			for _, entry in ipairs(ns.allEntries) do
+				if entry.id == id and entry.kind == "weapon" and entry.slotType == "auto" and entry.learnedKind ~= lastGain.kind then
+					entry.learnedKind = lastGain.kind
+					changed = true
+				end
+			end
+		end
+		if changed then
 			ns.UpdateLearnFlag()
 			if ns.RefreshOptions then ns.RefreshOptions() end
 		end
@@ -753,7 +779,7 @@ local function SpellMap()
 	local map = ns.spellMap
 	if map then return map end
 	map = {}
-	for _, entry in ipairs(ns.entries) do
+	for _, entry in ipairs(ns.allEntries) do
 		if entry.kind ~= "view" then
 			local _, spellID = ns.ItemSpell(entry.id)
 			if spellID then
@@ -786,11 +812,13 @@ function ns.OnCastSucceeded(spellID)
 		elseif ns.AurasSecret() then
 			-- The new buff can't be read yet: assume it's up, for as long as
 			-- it lasted the last time it was seen.
-			local cache = ns.cache[entry.id .. ":0"]
-			if cache then
-				cache.active, cache.predicted = true, true
-				cache.expires = entry.dur and now + entry.dur or nil
-				cache.duration = entry.dur
+			for _, button in ipairs(ns.buttons) do
+				if button.entry == entry then
+					local cache = button.cache
+					cache.active, cache.predicted = true, true
+					cache.expires = entry.dur and now + entry.dur or nil
+					cache.duration = entry.dur
+				end
 			end
 		elseif not (entry.auraName and entry.auraName ~= "") then
 			-- Watch what the item adds over the next moments.

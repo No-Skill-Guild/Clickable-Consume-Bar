@@ -21,11 +21,7 @@ The command is now `/ccb`. The old `/cbb` still works.
 
 ## Install
 
-### WoWUp (recommended)
-Paste the repo URL into WoWUp's **Get Addons** search to install and receive automatic updates.
-
-### Manual
-Download the zip from the latest [Release](../../releases) and unzip so the folder ends up at:
+Unzip so the folder ends up at:
 
     World of Warcraft\_forever_\Interface\AddOns\ClickableConsumeBar\
 
@@ -35,7 +31,9 @@ Restart the game or type `/reload`.
 
 Type `/ccb`, or click the flask icon on the minimap (left-click opens the menu, right-click locks or unlocks the bar, drag moves the button; it can be turned off on the Layout page). The menu is also under the game's addon button and Options > AddOns.
 
-**Consumables.** The page lists what is on the bar and, below it, the usable consumables in your bags. Click Add next to the ones you want. You can also type an item ID or name, or drop an item from your bags onto the list.
+**Bars.** A profile can have up to four bars. Each bar has its own consumables, its own position and look, and its own Show When rules, so you can for example keep weapon buffs on a bar that is always up and reagents on one that only shows out of combat. The Consumables, Show When and Layout pages have a row of bar buttons along the top: pick a bar there and the page edits that bar. "+ New Bar" adds one; rename or delete a bar on the Layout page. The same item can be on more than one bar. Glow settings, the lock, tooltips and the minimap button are shared by all bars.
+
+**Consumables.** The page lists what is on the picked bar and, below it, the usable consumables in your bags. Click Add next to the ones you want. You can also type an item ID or name, or drop an item from your bags onto the list.
 
 Each consumable has:
 
@@ -48,27 +46,27 @@ Each consumable has:
 
 **View Only items.** For things you want to keep an eye on rather than keep up, like reagents. The icon always shows the bag count, is desaturated when you have none, and does nothing when clicked. Put a number in the "low" box and it glows like an expiring buff when you carry that many or fewer. Items with no use effect are added as View Only automatically, and reagents in your bags appear in the list to add.
 
-**Profiles.** Each profile has its own list of consumables; glow, layout and show rules are shared. On the Profiles page you can create a profile (empty or as a copy of the one in use), switch with Use, pull another profile's list into the one in use with Copy From, and Delete. Copy From and Delete ask for a second click to confirm. Under "Switch Automatically", pick a profile for the open world, dungeons, raids, and battlegrounds and arenas, and the bar changes when you enter that kind of place. "Set Up Dungeon, Raid And PvP Profiles" creates all three as copies of the current profile and assigns them in one click. A profile you pick by hand stays until you move to a different kind of place. An item you already set up in one profile brings its settings along when you add it to another.
+**Profiles.** Each profile has its own set of bars. On the Profiles page you can create a profile (empty or as a copy of the one in use), switch with Use, pull another profile's bars into the one in use with Copy From, and Delete. Copy From and Delete ask for a second click to confirm. Under "Switch Automatically", pick a profile for the open world, dungeons, raids, and battlegrounds and arenas, and the bars change when you enter that kind of place. "Set Up Dungeon, Raid And PvP Profiles" creates all three as copies of the current profile and assigns them in one click. A profile you pick by hand stays until you move to a different kind of place. An item you already set up on one bar or profile brings its settings along when you add it to another.
 
-**Show When.** Always, or only while a buff is missing or about to expire. Then narrow it by combat, group, place, resting and mounted.
+**Show When.** Per bar. Always, or only while one of that bar's buffs is missing or about to expire. Then narrow it by combat, group, place, resting and mounted.
 
 **Glow.** Separate glows for "expiring" and "missing": style (soft pulse, marching pixels, solid border, blinking border), color and opacity, speed and thickness, with a live preview. The default warning time is here too.
 
-**Layout.** Lock, icon size, spacing, icons per row, direction, opacity, timer text, bag count and tooltips.
+**Layout.** Per bar: name, position, icon size, spacing, icons per row, direction, opacity, timer text and bag count. For all bars: the lock, tooltips and the minimap button.
 
 The menu is drawn in a flat dark style. If ElvUI is installed, the menu uses its accent color, panel colors and font.
 
-The bar starts unlocked with a blue handle above it. Drag the handle to place the bar, then lock it on the Layout page.
+Bars start unlocked, each with a blue handle above it that shows the bar's name. Drag a handle to place its bar (right-click it to open the menu on that bar), then tick Lock The Bars on the Layout page.
 
 **Minimap button and other addons.** The button follows the minimap's shape as minimap addons report it: round, square, and the partly rounded shapes, riding the curve on rounded corners and the straight edge on square ones. It re-seats itself when the minimap is resized or reshaped, its art scales if another addon resizes the button, and if a button-collecting addon moves it into its own bar, it leaves the placement to that addon.
 
 ## Commands
 
     /ccb                 open the menu
-    /ccb add <item>      add by item ID, link or name
+    /ccb add <item>      add by item ID, link or name, to the bar picked in the menu
     /ccb profile <name>  switch profile (no name lists them)
-    /ccb lock | unlock   lock or unlock the bar
-    /ccb reset           move the bar back to the middle of the screen
+    /ccb lock | unlock   lock or unlock the bars
+    /ccb reset           move the bars back to the middle of the screen
     /ccb status          list what the bar is tracking
     /ccb debug           explain why the bar is or isn't showing
     /ccb buffs           show which buff each icon is tracking and what's on you
@@ -80,6 +78,8 @@ The addon does no work unless something changed.
 - **No per-frame code.** Nothing runs every frame, and there is no repeating timer. Glows are game animations that the client runs by itself.
 - **One timer, set for the next change.** After each check the addon works out when an icon will next look different (a minute ticking over, the warning time, expiry) and sleeps until then. With a flask and food up that is about one wake-up a minute, and one a second only during a buff's final minute. With timer text turned off there are no wake-ups between events at all.
 - **Reads only what changed.** A buff event re-reads your buffs once (not once per icon), a weapon event re-reads the weapons, a bag event re-counts items. A wake-up for a ticking timer asks the game nothing and only rewrites the text that changed.
+- **Hidden bars cost nothing.** A bar its rules have hidden isn't repainted, doesn't keep its timers ticking and skips the weapon back-up read. It still wakes for its warning time and expiry, and catches up the moment the game shows it.
+- **More bars, same work.** Four bars use the same single timer and the same one read per event as one bar.
 - **Events only for what's on the bar.** Buff events are registered only while a self-buff item is on the bar, weapon events only while a weapon item is, and both are dropped otherwise. A bar with only View Only items listens to bag changes and nothing else.
 - **Combat is quiet.** Buff events are ignored outright during combat, because the game hides buff data then. Each of your spell casts costs one table lookup.
 - **Weapon icons** add one backup re-read every 15 seconds on top of the game's enchant events.
@@ -117,15 +117,5 @@ The time left is always read from the buff itself, so longer buffs (for example 
 - Reapplying a weapon item over one that is still active brings up the game's own "replace enchant?" confirmation.
 - An off-hand icon is dimmed, with no glow, while you have no weapon in that hand.
 - Settings and profiles are saved per character.
+- Settings from before bars existed carry over: each profile becomes one bar, "Bar 1", with the position, look and show rules you had. From then on those belong to each bar, so changing them in one profile no longer changes the others.
 - A profile switch during combat changes the bar when combat ends.
-
-## Releasing
-
-Releases are built automatically by [BigWigsMods/packager](https://github.com/BigWigsMods/packager) (`.github/workflows/release.yml`). Push a tag and a GitHub Release with the packaged zip is created, which WoWUp picks up. The packager reads `## Interface: 16xxx` in the `.toc` and marks the release for WoW Forever.
-
-```
-git tag v2.1.1
-git push origin v2.1.1
-```
-
-The tag becomes the addon version (`@project-version@` in the `.toc`).

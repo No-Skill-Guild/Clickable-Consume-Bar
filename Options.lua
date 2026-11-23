@@ -1,5 +1,7 @@
--- Options: the menu. Five pages: which consumables are on the bar, profiles,
--- when the bar is shown, how the glows look, and how the bar is laid out.
+-- Options: the menu. Five pages: which consumables are on a bar, profiles,
+-- when a bar is shown, how the glows look, and how a bar is laid out. The
+-- Consumables, Show When and Layout pages each work on one bar at a time,
+-- picked from the strip of bar buttons along their top.
 --
 -- The window is drawn in a flat dark style (solid panels, one pixel borders,
 -- an accent color on hover) with its own widgets instead of Blizzard's
@@ -15,7 +17,7 @@ local refreshers = {}   -- functions that reload every control from the saved se
 
 local ROW_HEIGHT = 28
 local CONTENT_WIDTH = 670
-local LIST_HEIGHT = 406
+local LIST_HEIGHT = 372
 
 ---------------------------------------------------------------------------
 -- Theme
@@ -107,7 +109,7 @@ local warnedCombat
 local function LayoutChanged()
 	if ns.InCombat() and not warnedCombat then
 		warnedCombat = true
-		ns.Print("You're in combat: changes to the bar itself apply when combat ends.")
+		ns.Print("You're in combat: changes to the bars themselves apply when combat ends.")
 	end
 	ns.Rebuild()
 end
@@ -293,6 +295,73 @@ end
 
 local function Clock(seconds)
 	return ("%d:%02d"):format(math.floor(seconds / 60), seconds % 60)
+end
+
+---------------------------------------------------------------------------
+-- The bar picker
+---------------------------------------------------------------------------
+-- Stand-ins for "the look / the show rules of the bar picked in the menu",
+-- so a control can read and write a setting without caring which bar that is.
+local barCfg = setmetatable({}, {
+	__index = function(_, key) return ns.EditBar().cfg[key] end,
+	__newindex = function(_, key, value) ns.EditBar().cfg[key] = value end,
+})
+local barShow = setmetatable({}, {
+	__index = function(_, key) return ns.EditBar().show[key] end,
+	__newindex = function(_, key, value) ns.EditBar().show[key] = value end,
+})
+
+local strips = {}
+
+local function RefreshStrips()
+	local bars = ns.profile.bars
+	for _, strip in ipairs(strips) do
+		for i, button in ipairs(strip.buttons) do
+			local bar = bars[i]
+			button:SetShown(bar ~= nil)
+			if bar then
+				local selected = i == ns.editBar
+				button:SetText(bar.name)
+				button.selected = selected
+				SetEdgeColor(button, selected and theme.accent or theme.border)
+				local color = selected and theme.accent or theme.text
+				button.label:SetTextColor(color[1], color[2], color[3])
+			end
+		end
+		strip.add:SetShown(#bars < ns.MAX_BARS)
+		strip.add:ClearAllPoints()
+		strip.add:SetPoint("LEFT", strip, "LEFT", 40 + #bars * 126, 0)
+	end
+end
+
+-- Puts the row of bar buttons at the top of a page and returns the area
+-- under it for the page's own controls.
+local function BarStrip(page)
+	local strip = CreateFrame("Frame", nil, page)
+	strip:SetPoint("TOPLEFT", page, "TOPLEFT", 0, 0)
+	strip:SetSize(CONTENT_WIDTH, 22)
+	local label = Text(strip, "Bar", 12, theme.dim)
+	label:SetPoint("LEFT", strip, "LEFT", 0, 0)
+	strip.buttons = {}
+	for i = 1, ns.MAX_BARS do
+		local button = Button(strip, "", 120, function() ns.SelectBar(i) end)
+		button:SetPoint("LEFT", strip, "LEFT", 40 + (i - 1) * 126, 0)
+		Tip(button, "Edit This Bar", "Everything on this page applies to the bar picked here. Rename or delete it on the Layout page.")
+		strip.buttons[i] = button
+	end
+	strip.add = Button(strip, "+ New Bar", 100, function()
+		local index, err = ns.AddBar()
+		if not index then ns.Print(err) end
+		ns.RefreshOptions()
+	end)
+	Tip(strip.add, "New Bar", "Adds an empty bar to this profile, with its own consumables, position, look and show rules. A profile can have up to four.")
+	if #strips == 0 then refreshers[#refreshers + 1] = RefreshStrips end
+	strips[#strips + 1] = strip
+
+	local inner = CreateFrame("Frame", nil, page)
+	inner:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -34)
+	inner:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", 0, 0)
+	return inner
 end
 
 ---------------------------------------------------------------------------
@@ -622,7 +691,7 @@ end
 local function RefreshList()
 	if not listContent then return end
 	local items = {}
-	items[#items + 1] = { header = "On The Bar  (Profile: " .. ns.db.profile .. ")" }
+	items[#items + 1] = { header = "On " .. ns.EditBar().name .. "  (Profile: " .. ns.db.profile .. ")" }
 	for _, entry in ipairs(ns.entries) do items[#items + 1] = { entry = entry } end
 	if #ns.entries == 0 then
 		items[#items + 1] = { note = "Nothing yet. Add consumables from the list below." }
@@ -654,6 +723,7 @@ local function RefreshList()
 end
 
 local function BuildConsumables(page)
+	page = BarStrip(page)
 	local help = Text(page, "Each icon uses its item when clicked. View Only icons just show how many you carry.", 11, theme.dim)
 	help:SetPoint("TOPLEFT", page, "TOPLEFT", 0, 0)
 	help:SetWidth(CONTENT_WIDTH)
@@ -730,10 +800,10 @@ local function RefreshProfiles()
 		if name then
 			local active = name == ns.db.profile
 			local color = active and theme.accent or theme.text
-			local count = #ns.db.profiles[name].entries
+			local count, barCount = ns.ProfileCounts(name)
 			row.name:SetText(name)
 			row.name:SetTextColor(color[1], color[2], color[3])
-			row.count:SetText(count == 1 and "1 Item" or (count .. " Items"))
+			row.count:SetText((count == 1 and "1 Item" or (count .. " Items")) .. (barCount > 1 and (", " .. barCount .. " Bars") or ""))
 			row.active:SetShown(active)
 			row.use:SetShown(not active)
 			row.copy:SetShown(not active)
@@ -789,7 +859,7 @@ end
 
 local function BuildProfiles(page)
 	Header(page, "Profiles", 0, 0, CONTENT_WIDTH)
-	local help = Text(page, "Each profile has its own list of consumables. Glow, layout and show rules are shared by all of them.", 11, theme.dim)
+	local help = Text(page, "Each profile has its own bars, and each bar its own consumables, position, look and show rules. Glow is shared.", 11, theme.dim)
 	help:SetPoint("TOPLEFT", page, "TOPLEFT", 0, -24)
 	help:SetWidth(CONTENT_WIDTH)
 
@@ -809,7 +879,7 @@ local function BuildProfiles(page)
 			if row.profile then ns.SwitchProfile(row.profile) end
 		end)
 		row.use:SetPoint("LEFT", row, "LEFT", 296, 0)
-		Tip(row.use, "Use This Profile", "Switch the bar to this profile's list.")
+		Tip(row.use, "Use This Profile", "Switch to this profile's bars.")
 		row.copy = Button(row, "Copy From", 90, function(self)
 			if not row.profile then return end
 			if not row.confirmCopy then
@@ -818,11 +888,11 @@ local function BuildProfiles(page)
 				return
 			end
 			local done, err = ns.CopyProfileFrom(row.profile)
-			ns.Print(done and ("Copied the list from \"" .. row.profile .. "\" into \"" .. ns.db.profile .. "\".") or err)
+			ns.Print(done and ("Copied the bars from \"" .. row.profile .. "\" into \"" .. ns.db.profile .. "\".") or err)
 			ns.RefreshOptions()
 		end)
 		row.copy:SetPoint("LEFT", row, "LEFT", 362, 0)
-		Tip(row.copy, "Copy From This Profile", "Replaces the list of the profile in use with a copy of this profile's list. Click twice to confirm. This can't be undone.")
+		Tip(row.copy, "Copy From This Profile", "Replaces the bars of the profile in use with copies of this profile's bars. Click twice to confirm. This can't be undone.")
 		row.delete = Button(row, "Delete", 70, function(self)
 			if not row.profile then return end
 			if not row.confirmDelete then
@@ -880,7 +950,8 @@ end
 -- Page: when the bar is shown
 ---------------------------------------------------------------------------
 local function BuildShow(page)
-	local show = ns.db.show
+	page = BarStrip(page)
+	local show = barShow -- the rules of the bar picked above
 	local function Setter(key)
 		return function(value)
 			show[key] = value
@@ -888,7 +959,7 @@ local function BuildShow(page)
 		end
 	end
 
-	local y = Choice(page, "Show The Bar", {
+	local y = Choice(page, "Show This Bar", {
 		{ "always", "Always" },
 		{ "attention", "Only When Missing Or Expiring" },
 	}, function() return show.mode end, Setter("mode"), 0, 0)
@@ -914,11 +985,11 @@ local function BuildShow(page)
 
 	local resting = Check(page, "Hide While Resting", function() return show.hideResting end, Setter("hideResting"))
 	resting:SetPoint("TOPLEFT", page, "TOPLEFT", 4, y)
-	Tip(resting, "Hide While Resting", "Hides the bar in cities and inns.")
+	Tip(resting, "Hide While Resting", "Hides this bar in cities and inns.")
 	local mounted = Check(page, "Hide While Mounted", function() return show.hideMounted end, Setter("hideMounted"))
 	mounted:SetPoint("TOPLEFT", page, "TOPLEFT", 4, y - 22)
 
-	local note = Text(page, "While the bar is unlocked it's always shown so you can place it. Tick Lock The Bar on the Layout page for these rules to apply.\n\nWith \"Only When Missing Or Expiring\", the bar is invisible in combat until a buff needs you, because addons can't show or hide clickable buttons mid-fight.", 11, theme.dim)
+	local note = Text(page, "These rules belong to the bar picked above and apply once the bars are locked (Layout page). With \"Only When Missing Or Expiring\", a bar is invisible in combat until one of its own buffs needs you.", 11, theme.dim)
 	note:SetPoint("TOPLEFT", page, "TOPLEFT", 0, y - 56)
 	note:SetWidth(CONTENT_WIDTH)
 end
@@ -1053,86 +1124,125 @@ end
 ---------------------------------------------------------------------------
 -- Page 4: layout
 ---------------------------------------------------------------------------
-local function BuildLayout(page)
-	local bar = ns.db.bar
+local barNameBox, barDelete
 
-	Header(page, "Position", 0, 0, CONTENT_WIDTH)
-	local locked = Check(page, "Lock The Bar", function() return bar.locked end, function(value)
-		bar.locked = value
+local function RefreshBarControls()
+	local bar = ns.EditBar()
+	if not barNameBox:HasFocus() then barNameBox:SetText(bar.name) end
+	barDelete.confirming = nil
+	barDelete:SetText("Delete Bar")
+	barDelete:SetShown(#ns.profile.bars > 1)
+end
+
+local function BuildLayout(page)
+	page = BarStrip(page)
+	local cfg = barCfg       -- the look of the bar picked above
+
+	Header(page, "This Bar", 0, 0, CONTENT_WIDTH)
+	local nameLabel = Text(page, "Name", 12)
+	nameLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -34)
+	barNameBox = EditBox(page, 170)
+	barNameBox:SetPoint("TOPLEFT", page, "TOPLEFT", 56, -30)
+	barNameBox:SetMaxLetters(20)
+	barNameBox.onBlur = function(self, cancelled)
+		if not cancelled then
+			local name = Trim(self:GetText())
+			if name ~= "" and name ~= ns.EditBar().name then
+				local done, err = ns.RenameBar(ns.editBar, name)
+				if not done then ns.Print(err) end
+			end
+		end
+		ns.RefreshOptions()
+	end
+	Tip(barNameBox, "Bar Name", "Shown on the bar's drag handle and in the bar picker above.")
+
+	local reset = Button(page, "Reset Position", 120, function()
+		ns.ResetBarPosition(ns.editBar)
+	end)
+	reset:SetPoint("LEFT", barNameBox, "RIGHT", 10, 0)
+	Tip(reset, "Reset Position", "Moves this bar back to where it started, under the middle of the screen.")
+
+	barDelete = Button(page, "Delete Bar", 100, function(self)
+		if not self.confirming then
+			self.confirming = true
+			self:SetText("Sure?")
+			return
+		end
+		local done, err = ns.DeleteBar(ns.editBar)
+		if not done then ns.Print(err) end
+		ns.RefreshOptions()
+	end)
+	barDelete:SetPoint("LEFT", reset, "RIGHT", 10, 0)
+	Tip(barDelete, "Delete This Bar", "Removes this bar and its list of consumables from the profile. Click twice to confirm. This can't be undone.")
+	refreshers[#refreshers + 1] = RefreshBarControls
+
+	Header(page, "Icons", 0, -68, CONTENT_WIDTH)
+	local size = Slider(page, "Icon Size", 20, 64, 2, function() return cfg.size end, function(value)
+		cfg.size = value
+		LayoutChanged()
+	end)
+	size:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -118)
+
+	local spacing = Slider(page, "Spacing", 0, 20, 1, function() return cfg.spacing end, function(value)
+		cfg.spacing = value
+		LayoutChanged()
+	end)
+	spacing:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -118)
+
+	local perRow = Slider(page, "Icons Per Row", 1, 24, 1, function() return cfg.perRow end, function(value)
+		cfg.perRow = value
+		LayoutChanged()
+	end)
+	perRow:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -162)
+
+	local alpha = Slider(page, "Opacity", 0.2, 1, 0.05, function() return cfg.alpha end, function(value)
+		cfg.alpha = value
+		ns.UpdateVisibility()
+	end, function(value) return ("%d%%"):format(value * 100 + 0.5) end)
+	alpha:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -162)
+
+	local vertical = Check(page, "Grow Downward", function() return cfg.vertical end, function(value)
+		cfg.vertical = value
+		LayoutChanged()
+	end)
+	vertical:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -192)
+	Tip(vertical, "Grow Downward", "Fill columns from top to bottom instead of rows from left to right.")
+
+	local timer = Check(page, "Show Time Left", function() return cfg.showTimer end, function(value)
+		cfg.showTimer = value
+		LookChanged()
+	end)
+	timer:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -192)
+
+	local count = Check(page, "Show Bag Count", function() return cfg.showCount end, function(value)
+		cfg.showCount = value
+		LookChanged()
+	end)
+	count:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -214)
+	Tip(count, "Show Bag Count", "Shows how many of the item are in your bags. View Only icons always show it.")
+
+	Header(page, "All Bars", 0, -254, CONTENT_WIDTH)
+	local locked = Check(page, "Lock The Bars", function() return ns.db.bar.locked end, function(value)
+		ns.db.bar.locked = value
 		ns.UpdateMover()
 		ns.UpdateVisibility()
 	end)
-	locked:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -30)
-	Tip(locked, "Lock The Bar", "Hides the drag handle and applies the Show When rules. While unlocked the bar is always shown so you can place it.")
+	locked:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -284)
+	Tip(locked, "Lock The Bars", "Hides the drag handles and applies each bar's Show When rules. While unlocked every bar is shown so you can place it.")
 
 	local minimap = Check(page, "Show Minimap Button", function() return ns.db.minimap.show end, function(value)
 		ns.db.minimap.show = value
 		ns.UpdateMinimapButton()
 	end)
-	minimap:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -30)
-	Tip(minimap, "Show Minimap Button", "Left-click it to open this menu, right-click to lock or unlock the bar, drag to move it around the minimap.")
+	minimap:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -284)
+	Tip(minimap, "Show Minimap Button", "Left-click it to open this menu, right-click to lock or unlock the bars, drag to move it around the minimap.")
 
-	local reset = Button(page, "Reset Position", 130, function()
-		bar.point, bar.relPoint, bar.x, bar.y = "CENTER", "CENTER", 0, -180
-		LayoutChanged()
+	local tooltips = Check(page, "Show Tooltips", function() return ns.db.bar.tooltips end, function(value)
+		ns.db.bar.tooltips = value
 	end)
-	reset:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -56)
-
-	Header(page, "Icons", 0, -98, CONTENT_WIDTH)
-	local size = Slider(page, "Icon Size", 20, 64, 2, function() return bar.size end, function(value)
-		bar.size = value
-		LayoutChanged()
-	end)
-	size:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -148)
-
-	local spacing = Slider(page, "Spacing", 0, 20, 1, function() return bar.spacing end, function(value)
-		bar.spacing = value
-		LayoutChanged()
-	end)
-	spacing:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -148)
-
-	local perRow = Slider(page, "Icons Per Row", 1, 24, 1, function() return bar.perRow end, function(value)
-		bar.perRow = value
-		LayoutChanged()
-	end)
-	perRow:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -192)
-
-	local alpha = Slider(page, "Opacity", 0.2, 1, 0.05, function() return bar.alpha end, function(value)
-		bar.alpha = value
-		ns.UpdateVisibility()
-	end, function(value) return ("%d%%"):format(value * 100 + 0.5) end)
-	alpha:SetPoint("TOPLEFT", page, "TOPLEFT", 314, -192)
-
-	local vertical = Check(page, "Grow Downward", function() return bar.vertical end, function(value)
-		bar.vertical = value
-		LayoutChanged()
-	end)
-	vertical:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -222)
-	Tip(vertical, "Grow Downward", "Fill columns from top to bottom instead of rows from left to right.")
-
-	Header(page, "On Each Icon", 0, -262, CONTENT_WIDTH)
-	local timer = Check(page, "Show Time Left", function() return bar.showTimer end, function(value)
-		bar.showTimer = value
-		LookChanged()
-	end)
-	timer:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -292)
-
-	local count = Check(page, "Show Bag Count", function() return bar.showCount end, function(value)
-		bar.showCount = value
-		LookChanged()
-	end)
-	count:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -314)
-	Tip(count, "Show Bag Count", "Shows how many of the item are in your bags. View Only icons always show it.")
-
-	local tooltips = Check(page, "Show Tooltips", function() return bar.tooltips end, function(value)
-		bar.tooltips = value
-	end)
-	tooltips:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -336)
+	tooltips:SetPoint("TOPLEFT", page, "TOPLEFT", 4, -306)
 end
 
----------------------------------------------------------------------------
--- The window
----------------------------------------------------------------------------
 local function SelectTab(index)
 	for i, page in ipairs(pages) do
 		local tab, selected = tabs[i], i == index

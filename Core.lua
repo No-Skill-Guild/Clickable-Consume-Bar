@@ -7,12 +7,14 @@ local ADDON, ns = ...
 
 local issecret = issecretvalue or function() return false end
 
-ns.version = "2.1.1"
+ns.version = "2.2.1"
 ns.icon = "Interface\\AddOns\\" .. ADDON .. "\\Media\\Icon"
 ns.iconRound = "Interface\\AddOns\\" .. ADDON .. "\\Media\\IconRound"
 
 ns.cache = {}       -- [button key] = last known state of that buff
-ns.buttons = {}     -- buttons currently on the bar
+ns.buttons = {}     -- every icon in use, across all bars
+ns.bars = {}        -- the bars in use (see Bar.lua)
+ns.allEntries = {}  -- every consumable of the active profile, across all bars
 
 ---------------------------------------------------------------------------
 -- Helpers
@@ -109,30 +111,38 @@ end
 -- Saved settings
 ---------------------------------------------------------------------------
 local MAX_PROFILES = 8
+local MAX_BARS = 4
+ns.MAX_BARS = MAX_BARS
 local CONTEXT_NAMES = { world = "open world", party = "dungeon", raid = "raid", pvp = "battleground" }
 
+-- Shared by everything: glow, warning time, the lock, tooltips, the minimap
+-- button and which profile goes with which kind of place.
 local DEFAULTS = {
 	auto = {},            -- [world | party | raid | pvp] = profile to switch to there
 	warn = 300,
 	desaturate = true,
-	bar = {
-		point = "CENTER", relPoint = "CENTER", x = 0, y = -180,
-		size = 36, spacing = 4, perRow = 12, vertical = false, alpha = 1,
-		locked = false, showTimer = true, showCount = true, tooltips = true,
-	},
+	bar = { locked = false, tooltips = true },
 	minimap = { show = true, angle = 215 },
-	show = {
-		mode = "always",      -- always | attention
-		combat = "any",       -- any | in | out
-		group = "any",        -- any | solo | group | raid
-		instance = "any",     -- any | inside | outside
-		hideResting = false,
-		hideMounted = false,
-	},
 	glow = {
 		expiring = { enabled = true, style = "pixel", r = 1, g = 0.82, b = 0, a = 1, speed = 1, size = 2 },
 		missing = { enabled = true, style = "pulse", r = 1, g = 0.15, b = 0.15, a = 1, speed = 1, size = 2 },
 	},
+}
+
+-- Each bar has its own place and look...
+local BAR_CFG = {
+	point = "CENTER", relPoint = "CENTER", x = 0, y = -180,
+	size = 36, spacing = 4, perRow = 12, vertical = false, alpha = 1,
+	showTimer = true, showCount = true,
+}
+-- ...and its own rules for when it's shown.
+local BAR_SHOW = {
+	mode = "always",      -- always | attention
+	combat = "any",       -- any | in | out
+	group = "any",        -- any | solo | group | raid
+	instance = "any",     -- any | inside | outside
+	hideResting = false,
+	hideMounted = false,
 }
 
 local function Fill(dst, src)
@@ -154,8 +164,32 @@ local function CopyTable(src)
 	return dst
 end
 
--- A profile is a named list of consumables. Glow, layout and show rules are
--- shared by all profiles. ns.entries is always the active profile's list.
+-- Where a bar starts out: the first under the middle of the screen, the
+-- others stacked below it so they don't land on top of each other.
+local function DefaultPosition(cfg, index)
+	cfg.point, cfg.relPoint, cfg.x, cfg.y = "CENTER", "CENTER", 0, -180 - (index - 1) * 50
+end
+
+local function NewBar(index, name)
+	local bar = { name = name or ("Bar " .. index), entries = {}, cfg = CopyTable(BAR_CFG), show = CopyTable(BAR_SHOW) }
+	DefaultPosition(bar.cfg, index)
+	return bar
+end
+
+-- Points ns.profile, ns.entries and friends at the profile and bar in use.
+local function Activate()
+	local db = ns.db
+	ns.profile = db.profiles[db.profile]
+	local bars = ns.profile.bars
+	if not ns.editBar or not bars[ns.editBar] then ns.editBar = 1 end
+	ns.entries = bars[ns.editBar].entries
+end
+
+-- A profile is a named set of up to four bars. Each bar has its own list of
+-- consumables, its own position and look, and its own show rules. ns.profile
+-- is the profile in use; ns.entries is the list of the bar being edited in
+-- the menu; ns.allEntries (filled when the bars are built) is every
+-- consumable of the profile.
 local function InitDB()
 	-- The addon used to be called ClickBuffBar. If that one is still installed
 	-- its settings are in memory right now: take them over once.
@@ -172,12 +206,37 @@ local function InitDB()
 		db.profile = "Default"
 	end
 	db.entries = nil
+
+	-- Before bars existed a profile was one list, and position, look and show
+	-- rules were shared. Each profile becomes one bar that keeps all of that.
+	local oldCfg, oldShow = {}, type(db.show) == "table" and db.show or nil
+	for key in pairs(BAR_CFG) do oldCfg[key] = db.bar[key] end
 	for _, profile in pairs(db.profiles) do
-		if type(profile.entries) ~= "table" then profile.entries = {} end
+		if type(profile.bars) ~= "table" or #profile.bars == 0 then
+			profile.bars = { {
+				name = "Bar 1",
+				entries = type(profile.entries) == "table" and profile.entries or {},
+				cfg = CopyTable(oldCfg),
+				show = oldShow and CopyTable(oldShow) or {},
+			} }
+		end
+		profile.entries = nil
+		for index, bar in ipairs(profile.bars) do
+			if type(bar.entries) ~= "table" then bar.entries = {} end
+			if type(bar.cfg) ~= "table" then bar.cfg = {} end
+			if type(bar.show) ~= "table" then bar.show = {} end
+			Fill(bar.cfg, BAR_CFG)
+			Fill(bar.show, BAR_SHOW)
+			if type(bar.name) ~= "string" or bar.name == "" then bar.name = "Bar " .. index end
+		end
 	end
+	for key in pairs(BAR_CFG) do db.bar[key] = nil end
+	db.show = nil
+
 	if not db.profiles[db.profile] then db.profile = next(db.profiles) end
 	ns.db = db
-	ns.entries = db.profiles[db.profile].entries
+	ns.editBar = 1
+	Activate()
 end
 ns.InitDB = InitDB
 
@@ -196,29 +255,38 @@ function ns.CreateProfile(name, copyFrom)
 	if ns.db.profiles[name] then return nil, "There's already a profile called \"" .. name .. "\"." end
 	if #ns.ProfileNames() >= MAX_PROFILES then return nil, "You can have up to " .. MAX_PROFILES .. " profiles." end
 	local source = copyFrom and ns.db.profiles[copyFrom]
-	ns.db.profiles[name] = { entries = source and CopyTable(source.entries) or {} }
+	ns.db.profiles[name] = { bars = source and CopyTable(source.bars) or { NewBar(1) } }
 	return name
+end
+
+-- How much is in a profile: consumables across all its bars, and bars.
+function ns.ProfileCounts(name)
+	local profile = ns.db.profiles[name]
+	local items = 0
+	for _, bar in ipairs(profile.bars) do items = items + #bar.entries end
+	return items, #profile.bars
 end
 
 function ns.SwitchProfile(name)
 	local profile = ns.db.profiles[name]
 	if not profile then return false end
 	ns.db.profile = name
-	ns.entries = profile.entries
+	ns.editBar = 1
+	Activate()
 	ns.learning, ns.weaponPending = nil, nil
 	ns.Rebuild()
 	if ns.RefreshOptions then ns.RefreshOptions() end
 	return true
 end
 
--- Replaces the list of the profile in use with a copy of another profile's.
+-- Replaces the bars of the profile in use with copies of another profile's.
 function ns.CopyProfileFrom(name)
 	local source = ns.db.profiles[name]
 	if not source then return nil, "No such profile." end
 	if name == ns.db.profile then return nil, "That's the profile already in use." end
-	local entries = CopyTable(source.entries)
-	ns.db.profiles[ns.db.profile].entries = entries
-	ns.entries = entries
+	ns.db.profiles[ns.db.profile].bars = CopyTable(source.bars)
+	ns.editBar = 1
+	Activate()
 	ns.learning, ns.weaponPending = nil, nil
 	ns.Rebuild()
 	return true
@@ -258,6 +326,91 @@ function ns.CheckContext()
 	end
 end
 
+---------------------------------------------------------------------------
+-- Bars
+---------------------------------------------------------------------------
+-- The saved settings of the bar being edited in the menu.
+function ns.EditBar()
+	return ns.profile.bars[ns.editBar]
+end
+
+-- Chooses which bar the menu, /ccb add and the functions below work on.
+function ns.SelectBar(index)
+	if not ns.profile.bars[index] then return false end
+	ns.editBar = index
+	Activate()
+	if ns.RefreshOptions then ns.RefreshOptions() end
+	return true
+end
+
+local function CleanBarName(name)
+	name = type(name) == "string" and name:match("^%s*(.-)%s*$") or ""
+	if name == "" then return nil, "Type a name for the bar first." end
+	if #name > 20 then return nil, "That name is too long (20 characters at most)." end
+	return name
+end
+
+-- Adds an empty bar to the profile in use and selects it.
+function ns.AddBar(name)
+	local bars = ns.profile.bars
+	if #bars >= MAX_BARS then return nil, "A profile can have up to " .. MAX_BARS .. " bars." end
+	local index = #bars + 1
+	if name ~= nil then
+		local clean, err = CleanBarName(name)
+		if not clean then return nil, err end
+		name = clean
+	else
+		-- "Bar 3" may be taken after bars were deleted: use the first free number.
+		local number, taken = index, true
+		while taken do
+			taken = false
+			for _, bar in ipairs(bars) do
+				if bar.name == "Bar " .. number then taken = true end
+			end
+			if taken then number = number + 1 end
+		end
+		name = "Bar " .. number
+	end
+	bars[index] = NewBar(index, name)
+	ns.editBar = index
+	Activate()
+	ns.Rebuild()
+	return index
+end
+
+function ns.DeleteBar(index)
+	local bars = ns.profile.bars
+	if not bars[index] then return nil, "No such bar." end
+	if #bars == 1 then return nil, "A profile needs at least one bar." end
+	table.remove(bars, index)
+	if ns.editBar > #bars then ns.editBar = #bars end
+	Activate()
+	ns.learning, ns.weaponPending = nil, nil
+	ns.Rebuild()
+	return true
+end
+
+function ns.RenameBar(index, name)
+	local bar = ns.profile.bars[index]
+	if not bar then return nil, "No such bar." end
+	local clean, err = CleanBarName(name)
+	if not clean then return nil, err end
+	bar.name = clean
+	ns.UpdateMover()
+	return true
+end
+
+-- Puts a bar back where it started.
+function ns.ResetBarPosition(index)
+	local bar = ns.profile.bars[index]
+	if not bar then return end
+	DefaultPosition(bar.cfg, index)
+	ns.Rebuild()
+end
+
+---------------------------------------------------------------------------
+-- The consumables of the bar being edited
+---------------------------------------------------------------------------
 function ns.FindEntry(id)
 	for i, entry in ipairs(ns.entries) do
 		if entry.id == id then return entry, i end
@@ -281,19 +434,21 @@ end
 function ns.AddItem(id)
 	id = tonumber(id)
 	if not id then return nil, "That doesn't look like an item." end
-	if ns.FindEntry(id) then return nil, ns.ItemName(id) .. " is already on the bar." end
+	if ns.FindEntry(id) then return nil, ns.ItemName(id) .. " is already on " .. ns.EditBar().name .. "." end
 	if not ns.Call(C_Item.GetItemInfoInstant, id) then
 		return nil, "No item with ID " .. id .. " exists."
 	end
 	local entry = { id = id, kind = "self", mh = true, oh = false, slotType = "auto" }
 	local known
 	for _, profile in pairs(ns.db.profiles) do
-		for _, other in ipairs(profile.entries) do
-			if other.id == id then known = other end
+		for _, bar in ipairs(profile.bars) do
+			for _, other in ipairs(bar.entries) do
+				if other.id == id then known = other end
+			end
 		end
 	end
 	if known then
-		-- Already set up in another profile: bring its settings along.
+		-- Already set up on another bar or profile: bring its settings along.
 		entry = CopyTable(known)
 	elseif LooksLikeWeaponItem(id) then
 		entry.kind = "weapon"
@@ -366,7 +521,7 @@ end
 
 function handlers.PLAYER_LOGIN()
 	if not ns.db then InitDB() end
-	ns.CreateBar()
+	ns.StartBars()
 	ns.Rebuild()
 	ns.InitOptions()
 	ns.UpdateMinimapButton()
@@ -374,7 +529,7 @@ function handlers.PLAYER_LOGIN()
 	if ns.imported then
 		ns.Print("Imported your settings from ClickBuffBar. Log out, then delete the old ClickBuffBar folder.")
 	end
-	if #ns.entries == 0 then
+	if #ns.allEntries == 0 then
 		ns.Print("Type /ccb to pick the consumables you want on the bar.")
 	end
 end
@@ -388,9 +543,11 @@ end
 
 function handlers.PLAYER_REGEN_DISABLED()
 	ns.OnCombatStart()
-	-- Read everything right now, in the last moment before the game starts
-	-- hiding buffs: the timers kept through the fight start from here.
-	ns.Scan()
+	-- Read buffs and weapons right now, in the last moment before the game
+	-- starts hiding buffs: the timers kept through the fight start from here.
+	ns.MarkDirty("auras")
+	ns.MarkDirty("weapons")
+	ns.Update()
 	ns.MarkEstimated()
 end
 
@@ -491,12 +648,16 @@ end
 ---------------------------------------------------------------------------
 local function Status()
 	ns.Print("Profile \"" .. ns.db.profile .. "\" is tracking:")
-	for _, button in ipairs(ns.buttons) do
-		local state = button.state or {}
-		local left = state.expires and state.expires > 0 and ns.FormatTime(state.expires - GetTime()) or "-"
-		ns.Print(("  %s%s: %s, time left %s%s"):format(ns.ItemName(button.entry.id),
-			button.slot and (button.slot == 16 and " (main hand)" or " (off hand)") or "",
-			tostring(state.status), left, state.predicted and " (estimated)" or ""))
+	for _, bar in ipairs(ns.bars) do
+		if #ns.bars > 1 then ns.Print(" " .. bar.data.name .. ":") end
+		for _, button in ipairs(bar.buttons) do
+			local state = button.state or {}
+			local left = state.expires and state.expires > 0 and ns.FormatTime(state.expires - GetTime()) or "-"
+			ns.Print(("  %s%s: %s, time left %s%s"):format(ns.ItemName(button.entry.id),
+				button.slot and (button.slot == 16 and " (main hand)" or " (off hand)") or "",
+				tostring(state.status), left, state.predicted and " (estimated)" or ""))
+		end
+		if #bar.buttons == 0 and #ns.bars > 1 then ns.Print("  empty") end
 	end
 	if #ns.buttons == 0 then ns.Print("  none yet. Type /ccb to add some.") end
 end
@@ -514,12 +675,11 @@ SlashCmdList["CLICKABLECONSUMEBAR"] = function(msg)
 		ns.db.bar.locked = (cmd == "lock")
 		ns.UpdateMover()
 		ns.UpdateVisibility()
-		ns.Print(cmd == "lock" and "Bar locked." or "Bar unlocked. Drag it by the handle above it.")
+		ns.Print(cmd == "lock" and "Bars locked." or "Bars unlocked. Drag each one by the handle above it.")
 	elseif cmd == "reset" then
-		local bar = ns.db.bar
-		bar.point, bar.relPoint, bar.x, bar.y = "CENTER", "CENTER", 0, -180
+		for index, bar in ipairs(ns.profile.bars) do DefaultPosition(bar.cfg, index) end
 		ns.Rebuild()
-		ns.Print("Bar moved back to the middle of the screen.")
+		ns.Print("Bars moved back to the middle of the screen.")
 	elseif cmd == "add" then
 		local id = ns.ResolveItem(rest)
 		local entry, err = ns.AddItem(id)
@@ -541,10 +701,10 @@ SlashCmdList["CLICKABLECONSUMEBAR"] = function(msg)
 		ns.DebugBuffs()
 	else
 		ns.Print("/ccb - open the menu")
-		ns.Print("/ccb add <item ID, link or name> - add a consumable")
+		ns.Print("/ccb add <item ID, link or name> - add a consumable to the bar selected in the menu")
 		ns.Print("/ccb profile <name> - switch profile (no name lists them)")
-		ns.Print("/ccb lock | unlock - lock or unlock the bar for moving")
-		ns.Print("/ccb reset - move the bar back to the middle of the screen")
+		ns.Print("/ccb lock | unlock - lock or unlock the bars for moving")
+		ns.Print("/ccb reset - move the bars back to the middle of the screen")
 		ns.Print("/ccb status - list what the bar is tracking")
 		ns.Print("/ccb debug - explain why the bar is or isn't showing")
 		ns.Print("/ccb buffs - show which buff each icon is tracking and what's on you")
